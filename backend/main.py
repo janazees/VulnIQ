@@ -35,7 +35,12 @@ app.add_middleware(
 
 # Locate project files.
 PROJECT_DIR = Path(__file__).resolve().parent.parent
-CSV_PATH = PROJECT_DIR / "combined_cve_vulnerabilities.csv"
+CSV_PATH = Path(
+    os.getenv(
+        "CSV_PATH",
+        str(PROJECT_DIR / "combined_cve_vulnerabilities.csv"),
+    )
+)
 ARTIFACT_DIR = PROJECT_DIR / "model_artifacts"
 
 # Load the CVE dataset.
