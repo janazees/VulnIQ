@@ -95,6 +95,8 @@ h1, h2, h3, h4, p {
 }
 
 .app-shell {
+  width: 100%;
+  margin: 0;
   min-height: 100vh;
   background: var(--bg);
 }
@@ -238,11 +240,15 @@ h1, h2, h3, h4, p {
 }
 
 /* ===== Layout ===== */
+
 .main-content {
-  max-width: 1280px;
-  margin: 0 auto;
-  padding: 28px 32px 40px;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 28px 24px 40px;
+  min-width: 0;
 }
+
 
 .demo-banner {
   display: flex;
@@ -1094,3 +1100,406 @@ h1, h2, h3, h4, p {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* ===== Additions: model panel, filters, notices, API status ===== */
+.environment-pill.offline .live-dot { background: var(--red); }
+.environment-pill.connecting .live-dot { background: var(--amber); }
+
+.metric-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.metric-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.metric-chip strong {
+  color: var(--text);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-chart {
+  height: 250px;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 20px 16px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.toggle-row input {
+  margin-top: 4px;
+  accent-color: var(--accent-strong);
+}
+
+.toggle-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0 20px 16px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--amber-soft);
+  color: var(--text-soft);
+  font-size: 13px;
+}
+
+.notice svg { flex-shrink: 0; color: var(--amber); }
+.notice code { font-size: 12px; }
+
+
+/* ===== Live CVE prediction: layout and input fixes ===== */
+
+.explorer-panel {
+  overflow: hidden;
+  padding-bottom: 22px;
+}
+
+.explorer-panel > .panel-heading {
+  align-items: center;
+  margin-bottom: 22px;
+}
+
+.live-prediction-form,
+.explorer-panel > .empty-state,
+.live-prediction-result {
+  margin-left: 20px;
+  margin-right: 20px;
+}
+
+.live-prediction-form {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-2);
+}
+
+.live-prediction-label {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.live-prediction-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.live-cve-input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 46px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface) !important;
+  color: var(--text) !important;
+  caret-color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  outline: none;
+  box-shadow: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.live-cve-input::placeholder {
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.live-cve-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.live-predict-button {
+  min-height: 46px;
+  padding: 0 20px;
+  white-space: nowrap;
+}
+
+.live-predict-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.live-cve-help {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.live-prediction-result {
+  margin-top: 26px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.live-prediction-result > .panel-heading {
+  align-items: center;
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.live-prediction-result > .panel-heading h3 {
+  overflow-wrap: anywhere;
+  font-size: 20px;
+  letter-spacing: -0.02em;
+}
+
+.live-prediction-result > .panel-heading p {
+  margin-top: 5px;
+}
+
+.live-prediction-description {
+  max-height: 190px;
+  overflow-y: auto;
+  margin: 0 0 22px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+.live-prediction-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 20px;
+}
+
+.live-prediction-metrics .stat-card {
+  min-width: 0;
+  padding: 16px;
+  border-radius: 12px;
+}
+
+.live-prediction-metrics .stat-card-top {
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.live-prediction-metrics .stat-note {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-align: right;
+}
+
+.live-prediction-metrics .stat-label {
+  min-height: 38px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.live-prediction-metrics .stat-value-row {
+  margin-top: 8px;
+}
+
+.live-prediction-metrics .stat-value-row h2 {
+  font-size: clamp(20px, 2vw, 27px);
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.live-prediction-metadata {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 44px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.live-prediction-metadata span {
+  color: var(--muted);
+}
+
+.live-prediction-metadata strong {
+  margin-left: auto;
+  color: var(--text);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.live-prediction-result > .chart-footnote {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.explorer-panel > .empty-state {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.primary-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+/* ===== Live prediction responsive layout ===== */
+
+@media (max-width: 1000px) {
+  .live-prediction-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .explorer-panel {
+    padding-bottom: 16px;
+  }
+
+  .live-prediction-form,
+  .explorer-panel > .empty-state,
+  .live-prediction-result {
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+
+  .live-prediction-form,
+  .live-prediction-result {
+    padding: 14px;
+  }
+
+  .live-prediction-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .live-predict-button {
+    width: 100%;
+  }
+
+  .live-prediction-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .live-prediction-metrics .stat-card {
+    padding: 12px;
+  }
+
+  .live-prediction-metrics .stat-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .live-prediction-metrics .stat-note {
+    font-size: 9px;
+  }
+
+  .live-prediction-metrics .stat-value-row h2 {
+    font-size: 21px;
+  }
+
+  .live-prediction-result > .panel-heading h3 {
+    font-size: 17px;
+  }
+
+  .live-prediction-metadata {
+    align-items: flex-start;
+    font-size: 12px;
+  }
+}
+
+
+/* ===== Full-width dashboard and centered section headings ===== */
+
+/* Center the headings and descriptions in the CVE sections */
+.table-panel > .panel-heading,
+.explorer-panel > .panel-heading {
+  justify-content: center;
+  text-align: center;
+}
+
+.table-panel > .panel-heading > div,
+.explorer-panel > .panel-heading > div {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Center the main title and description within each section */
+.table-panel > .panel-heading h3,
+.table-panel > .panel-heading p,
+.explorer-panel > .panel-heading h3,
+.explorer-panel > .panel-heading p {
+  text-align: center;
+}
+
+/* Keep the dashboard responsive on smaller screens */
+@media (max-width: 720px) {
+  .main-content {
+    padding: 20px 12px 32px;
+  }
+}
+
+
+/* Center the Model-ranked CVE list heading and description */
+.table-panel > .panel-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  width: 100%;
+}
+
+.table-panel > .panel-heading h3,
+.table-panel > .panel-heading p {
+  width: 100%;
+  text-align: center;
+}
+
+
+/* Remove unwanted outer page margins */
+html,
+body,
+#root,
+.app-shell {
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  margin: 0;
+}
+
+.main-content {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: 28px 12px 40px;
+}
+

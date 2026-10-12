@@ -1,13 +1,9 @@
-
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
-  Activity,
   AlertTriangle,
   ArrowUpRight,
   BrainCircuit,
-  ChevronDown,
   ChevronRight,
-  CircleHelp,
   FileSearch,
   Filter,
   Gauge,
@@ -70,23 +66,11 @@ const chartPalettes = {
   },
 };
 
-/* ---------- Illustrative chart data ---------- */
-
-const trendData = [
-  { month: "May", count: 184 },
-  { month: "Jun", count: 232 },
-  { month: "Jul", count: 207 },
-  { month: "Aug", count: 289 },
-  { month: "Sep", count: 254 },
-  { month: "Oct", count: 318 },
-];
-
-const demoExplanations = [
-  { feature: "Attack vector: Network", impact: 0.92 },
-  { feature: "Exploitability score", impact: 0.76 },
-  { feature: "Privileges required: None", impact: 0.63 },
-  { feature: "EPSS probability", impact: 0.49 },
-  { feature: "User interaction required", impact: -0.24 },
+const METRIC_LABELS = [
+  ["roc_auc", "ROC-AUC"],
+  ["pr_auc", "PR-AUC"],
+  ["precision", "Precision"],
+  ["recall", "Recall"],
 ];
 
 /* ---------- Helpers ---------- */
@@ -104,34 +88,37 @@ const getInitialTheme = () => {
     : "dark";
 };
 
+const toNumberOrNull = (value) => {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+
 const formatNumber = (number) =>
   new Intl.NumberFormat("en-US").format(Number(number) || 0);
 
 const formatPercent = (value) =>
   `${((Number(value) || 0) * 100).toFixed(1)}%`;
 
-/* This is a temporary heuristic, not the trained model prediction. */
-function mapApiRecord(row) {
-  const score =
-    row.base_score == null || row.base_score === ""
-      ? null
-      : Number(row.base_score);
+const formatProbability = (value) => {
+  if (value == null) return "N/A";
 
-  const epss =
-    row.epss_score == null || row.epss_score === ""
-      ? null
-      : Number(row.epss_score);
+  const percent = value * 100;
+
+  return percent > 0 && percent < 0.1
+    ? "<0.1%"
+    : `${percent.toFixed(1)}%`;
+};
+
+/* Maps one API row. modelScore is the trained model's KEV probability. */
+
+function mapApiRecord(row, index) {
+  const score = toNumberOrNull(row.base_score);
+  const epss = toNumberOrNull(row.epss_score);
+  const modelScore = toNumberOrNull(row.kev_probability);
 
   const kevValue = String(row.cisa_kev ?? "").trim().toLowerCase();
   const isKev = ["true", "1", "yes"].includes(kevValue);
-
-  const safeScore = Number.isFinite(score) ? score : 0;
-  const safeEpss = Number.isFinite(epss) ? epss : 0;
-
-  const priority = Math.min(
-    100,
-    Math.round(safeScore * 4 + safeEpss * 40 + (isKev ? 20 : 0))
-  );
 
   const description = row.description || "No description available";
 
@@ -142,15 +129,14 @@ function mapApiRecord(row) {
         ? `${description.slice(0, 100)}...`
         : description,
     severity: String(row.base_severity || "NONE").toUpperCase(),
-    score: Number.isFinite(score) ? score : null,
+    score,
     vector: String(row.attack_vector || "UNKNOWN").toUpperCase(),
-    epss: Number.isFinite(epss) ? epss : null,
+    epss,
     status: isKev ? "In CISA KEV" : "Not listed in KEV",
     date: row.published_date || "Unknown",
     description,
-    priority,
-    tier: priority >= 90 ? "P1" : priority >= 70 ? "P2" : "P3",
-    rank: 0,
+    modelScore,
+    rank: index + 1,
   };
 }
 
@@ -167,23 +153,26 @@ function SeverityBadge({ severity }) {
   );
 }
 
-function PriorityCell({ priority, tier }) {
+function ModelRiskCell({ value }) {
+  if (value == null) {
+    return <span className="rank-cell">N/A</span>;
+  }
+
   return (
     <div className="priority-cell">
-      <span className={`tier-badge ${tier.toLowerCase()}`}>{tier}</span>
       <div
         className="priority-bar"
         role="img"
-        aria-label={`Heuristic priority score ${priority} out of 100`}
+        aria-label={`Model KEV probability ${formatProbability(value)}`}
       >
-        <span style={{ width: `${priority}%` }} />
+        <span style={{ width: `${Math.max(2, value * 100)}%` }} />
       </div>
-      <strong>{priority}</strong>
+      <strong>{formatProbability(value)}</strong>
     </div>
   );
 }
 
-function StatCard({ icon: Icon, label, value, change, tone, note }) {
+function StatCard({ icon: Icon, label, value, tone, note }) {
   return (
     <article className="stat-card">
       <div className="stat-card-top">
@@ -197,12 +186,6 @@ function StatCard({ icon: Icon, label, value, change, tone, note }) {
 
       <div className="stat-value-row">
         <h2>{value}</h2>
-        {change && (
-          <span className="stat-change">
-            <ArrowUpRight size={14} />
-            {change}
-          </span>
-        )}
       </div>
     </article>
   );
@@ -231,6 +214,7 @@ function App() {
 
   const [search, setSearch] = useState("");
   const [severityFilter, setSeverityFilter] = useState("ALL");
+  const [hideKev, setHideKev] = useState(true);
 
   const [vulnerabilities, setVulnerabilities] = useState([]);
   const [stats, setStats] = useState(null);
@@ -240,13 +224,27 @@ function App() {
   const [statsError, setStatsError] = useState("");
   const [apiError, setApiError] = useState("");
 
+  const [modelInfo, setModelInfo] = useState(null);
+  const [modelInfoError, setModelInfoError] = useState("");
+
   const [selectedCve, setSelectedCve] = useState(null);
   const [showDetails, setShowDetails] = useState(false);
 
-  // Trained model prediction state
   const [modelPrediction, setModelPrediction] = useState(null);
   const [predictionLoading, setPredictionLoading] = useState(false);
   const [predictionError, setPredictionError] = useState("");
+
+  /* Live prediction by CVE ID */
+  const [liveCveId, setLiveCveId] = useState("CVE-2021-44228");
+  const [livePrediction, setLivePrediction] = useState(null);
+  const [livePredictionLoading, setLivePredictionLoading] = useState(false);
+  const [livePredictionError, setLivePredictionError] = useState("");
+
+  /* SHAP explanation */
+  const [shapExplanation, setShapExplanation] = useState(null);
+  const [shapLoading, setShapLoading] = useState(false);
+  const [shapError, setShapError] = useState("");
+  const [shapRetry, setShapRetry] = useState(0);
 
   const colors = chartPalettes[theme];
 
@@ -266,7 +264,7 @@ function App() {
     setTheme((current) => (current === "dark" ? "light" : "dark"));
   };
 
-  /* ---------- Fetch dataset statistics ---------- */
+  /* ---------- Dataset statistics ---------- */
 
   useEffect(() => {
     const controller = new AbortController();
@@ -281,8 +279,7 @@ function App() {
           throw new Error(`Statistics request failed (${response.status})`);
         }
 
-        const data = await response.json();
-        setStats(data);
+        setStats(await response.json());
         setStatsError("");
       } catch (error) {
         if (error.name !== "AbortError") {
@@ -298,7 +295,38 @@ function App() {
     return () => controller.abort();
   }, []);
 
-  /* ---------- Fetch vulnerability records ---------- */
+  /* ---------- Model details ---------- */
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function loadModelInfo() {
+      try {
+        const response = await fetch(`${API_BASE}/api/model-info`, {
+          signal: controller.signal,
+        });
+
+        if (!response.ok) {
+          throw new Error(`Model info request failed (${response.status})`);
+        }
+
+        setModelInfo(await response.json());
+        setModelInfoError("");
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          setModelInfoError(
+            error.message || "Could not load model details from the backend."
+          );
+        }
+      }
+    }
+
+    loadModelInfo();
+
+    return () => controller.abort();
+  }, []);
+
+  /* ---------- Vulnerability records ---------- */
 
   useEffect(() => {
     const controller = new AbortController();
@@ -311,6 +339,8 @@ function App() {
         const params = new URLSearchParams({
           q: search.trim(),
           severity: severityFilter,
+          sort: "model",
+          exclude_kev: String(hideKev),
           limit: "100",
           offset: "0",
         });
@@ -328,15 +358,7 @@ function App() {
 
         const data = await response.json();
 
-        const rows = (data.items || [])
-          .map(mapApiRecord)
-          .sort((a, b) => b.priority - a.priority)
-          .map((cve, index) => ({
-            ...cve,
-            rank: index + 1,
-          }));
-
-        setVulnerabilities(rows);
+        setVulnerabilities((data.items || []).map(mapApiRecord));
         setTotalMatches(Number(data.total) || 0);
       } catch (error) {
         if (error.name !== "AbortError") {
@@ -357,9 +379,9 @@ function App() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [search, severityFilter]);
+  }, [search, severityFilter, hideKev]);
 
-  /* ---------- Fetch trained model prediction ---------- */
+  /* ---------- Model prediction for selected CVE ---------- */
 
   useEffect(() => {
     if (!showDetails || !selectedCve?.id) return;
@@ -378,15 +400,20 @@ function App() {
         );
 
         if (!response.ok) {
-          throw new Error(`Prediction request failed (${response.status})`);
+          const errorBody = await response.json().catch(() => null);
+
+          throw new Error(
+            errorBody?.detail ||
+              `Prediction request failed (${response.status})`
+          );
         }
 
-        const data = await response.json();
-        setModelPrediction(data);
+        setModelPrediction(await response.json());
       } catch (error) {
         if (error.name !== "AbortError") {
           setPredictionError(
-            responseErrorMessage(error)
+            error.message ||
+              "Could not generate a model prediction. Check that the backend is running and this CVE exists in its dataset."
           );
         }
       } finally {
@@ -401,7 +428,79 @@ function App() {
     return () => controller.abort();
   }, [showDetails, selectedCve?.id]);
 
-  /* ---------- Chart data ---------- */
+  /* ---------- SHAP explanation ---------- */
+
+  useEffect(() => {
+    if (activeTab !== "Explainability" || !selectedCve?.id) return;
+
+    const controller = new AbortController();
+
+    async function loadShapExplanation() {
+      setShapLoading(true);
+      setShapError("");
+      setShapExplanation(null);
+
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/explain/${encodeURIComponent(selectedCve.id)}`,
+          { signal: controller.signal }
+        );
+
+        if (!response.ok) {
+          const errorBody = await response.json().catch(() => null);
+
+          throw new Error(
+            errorBody?.detail ||
+              `SHAP explanation request failed (${response.status})`
+          );
+        }
+
+        const data = await response.json();
+
+        if (!Array.isArray(data.contributions)) {
+          throw new Error(
+            "The backend response does not contain SHAP contributions."
+          );
+        }
+
+        const contributions = data.contributions
+          .map((item) => ({
+            feature: String(item.feature ?? "Unknown feature"),
+            impact: Number(item.shap_value),
+            direction: String(item.direction ?? "").toLowerCase(),
+          }))
+          .filter(
+            (item) =>
+              Number.isFinite(item.impact) && item.feature.trim().length > 0
+          );
+
+        if (contributions.length === 0) {
+          throw new Error(
+            "The backend returned no valid SHAP contributions for this CVE."
+          );
+        }
+
+        setShapExplanation({ ...data, contributions });
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          setShapError(
+            error.message ||
+              "Could not load SHAP values. Check the backend logs."
+          );
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setShapLoading(false);
+        }
+      }
+    }
+
+    loadShapExplanation();
+
+    return () => controller.abort();
+  }, [activeTab, selectedCve?.id, shapRetry]);
+
+  /* ---------- Derived data ---------- */
 
   const severityOrder = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
 
@@ -411,10 +510,32 @@ function App() {
     color: colors.severity[index],
   }));
 
-  const filteredVulnerabilities = useMemo(
-    () => vulnerabilities,
-    [vulnerabilities]
-  );
+  const importanceData = (modelInfo?.feature_importance || [])
+    .map((item) => ({
+      feature: String(item.feature ?? ""),
+      importance: Number(item.importance),
+    }))
+    .filter((item) => item.feature && Number.isFinite(item.importance))
+    .slice(0, 8);
+
+  const metricChips = METRIC_LABELS.filter(
+    ([key]) => toNumberOrNull(modelInfo?.metrics?.[key]) != null
+  ).map(([key, label]) => ({
+    label,
+    value: Number(modelInfo.metrics[key]).toFixed(3),
+  }));
+
+  const scoresMissing =
+    !loading &&
+    !apiError &&
+    vulnerabilities.length > 0 &&
+    vulnerabilities.every((cve) => cve.modelScore == null);
+
+  const apiStatus = apiError || statsError
+    ? "offline"
+    : stats
+      ? "online"
+      : "connecting";
 
   const tooltipStyle = {
     background: colors.tooltipBg,
@@ -429,8 +550,60 @@ function App() {
     setSelectedCve(cve);
     setModelPrediction(null);
     setPredictionError("");
+    setShapExplanation(null);
+    setShapError("");
     setShowDetails(true);
     setActiveTab("Vulnerabilities");
+  };
+
+  /* ---------- Live prediction by CVE ID ---------- */
+
+  const runLivePrediction = async (event) => {
+    event?.preventDefault();
+
+    const cveId = liveCveId.trim().toUpperCase();
+
+    if (!/^CVE-\d{4}-\d{4,}$/.test(cveId)) {
+      setLivePrediction(null);
+      setLivePredictionError(
+        "Enter a valid CVE ID, for example CVE-2021-44228."
+      );
+      return;
+    }
+
+    setLiveCveId(cveId);
+    setLivePredictionLoading(true);
+    setLivePredictionError("");
+    setLivePrediction(null);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/api/predict-live/${encodeURIComponent(cveId)}`,
+        {
+          method: "GET",
+          headers: { Accept: "application/json" },
+        }
+      );
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail ||
+            data?.message ||
+            `Prediction failed (${response.status}). Check that the backend GET endpoint is available.`
+        );
+      }
+
+      setLivePrediction(data);
+    } catch (error) {
+      setLivePredictionError(
+        error.message ||
+          "Could not connect to the prediction API. Check that the backend is running."
+      );
+    } finally {
+      setLivePredictionLoading(false);
+    }
   };
 
   const navigateTo = (tab) => {
@@ -438,6 +611,10 @@ function App() {
     setSeverityFilter("ALL");
     setSearch("");
   };
+
+  const modelStatement = hideKev
+    ? "Highest predicted likelihood of joining CISA KEV, among CVEs not yet listed."
+    : "Highest predicted likelihood of CISA KEV inclusion, including CVEs already listed.";
 
   /* ---------- Render ---------- */
 
@@ -452,6 +629,7 @@ function App() {
           <span className="brand-mark">
             <Shield size={23} strokeWidth={2.2} />
           </span>
+
           <span className="brand-copy">
             <strong>
               Vuln<span>IQ</span>
@@ -478,26 +656,22 @@ function App() {
         </nav>
 
         <div className="topbar-right">
-          <span className="environment-pill">
+          <span className={`environment-pill ${apiStatus}`}>
             <span className="live-dot" />
-            API CONNECTED
+            {apiStatus === "online"
+              ? "API CONNECTED"
+              : apiStatus === "offline"
+                ? "API OFFLINE"
+                : "CONNECTING"}
           </span>
+
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
+
           <div className="avatar">VI</div>
         </div>
       </header>
 
       <main className="main-content">
-        <div className="demo-banner">
-          <CircleHelp size={16} />
-          <span>
-            <strong>Live dataset and model</strong> — CVE records and
-            statistics come from your local API. The trained model estimates
-            CISA KEV inclusion in each CVE detail view. Priority scores,
-            activity trends, and SHAP-style explanations remain illustrative.
-          </span>
-        </div>
-
         <section className="page-heading">
           <div>
             <div className="eyebrow">
@@ -509,31 +683,20 @@ function App() {
               {activeTab === "Overview"
                 ? "Vulnerability overview"
                 : activeTab === "Vulnerabilities"
-                  ? "Prioritized CVE list"
+                  ? "Model-ranked CVE list"
                   : "AI explainability"}
             </h1>
 
             <p className="page-description">
               {activeTab === "Overview"
-                ? "Monitor vulnerability exposure and understand security risk."
+                ? "Dataset exposure, what the model learned, and the CVEs it flags first."
                 : activeTab === "Vulnerabilities"
-                  ? "Explore vulnerability records, heuristic priorities, and trained model predictions."
-                  : "Explore illustrative feature contributions. Actual SHAP explanations are not yet connected."}
+                  ? "Search for a CVE to predict its KEV inclusion likelihood, or browse the model-ranked list below."
+                  : selectedCve
+                    ? `SHAP feature contributions for ${selectedCve.id}.`
+                    : "Select a CVE from the Vulnerabilities page to inspect its SHAP explanation."}
             </p>
           </div>
-
-          <button
-            className="date-button"
-            onClick={() =>
-              window.alert(
-                "Date filtering will be added after publication-date filtering is implemented."
-              )
-            }
-          >
-            <Activity size={16} />
-            All dataset dates
-            <ChevronDown size={15} />
-          </button>
         </section>
 
         {/* ---------- Overview ---------- */}
@@ -552,9 +715,8 @@ function App() {
                 icon={ShieldAlert}
                 label="Total CVE records"
                 value={stats ? formatNumber(stats.total_records) : "..."}
-                change="Dataset"
                 tone="violet"
-                note="CSV"
+                note="Dataset"
               />
 
               <StatCard
@@ -599,6 +761,7 @@ function App() {
                     <h3>Severity distribution</h3>
                     <p>Breakdown across the CVE dataset</p>
                   </div>
+
                   <span className="panel-icon">
                     <Gauge size={18} />
                   </span>
@@ -621,6 +784,7 @@ function App() {
                             <Cell key={entry.name} fill={entry.color} />
                           ))}
                         </Pie>
+
                         <Tooltip
                           formatter={(value) => formatNumber(value)}
                           contentStyle={tooltipStyle}
@@ -670,66 +834,115 @@ function App() {
               <article className="panel trend-panel">
                 <div className="panel-heading">
                   <div>
-                    <h3>Detection activity</h3>
-                    <p>Illustrative monthly activity</p>
+                    <h3>What the model weighs most</h3>
+                    <p>
+                      {modelInfo?.model_name
+                        ? `${modelInfo.model_name} · predicts CISA KEV inclusion`
+                        : "Global feature importance"}
+                    </p>
                   </div>
-                  <span className="trend-indicator">
-                    <ArrowUpRight size={14} /> Demo trend
+
+                  <span className="panel-icon">
+                    <BrainCircuit size={18} />
                   </span>
                 </div>
 
-                <div className="trend-chart">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={trendData}
-                      margin={{ top: 15, right: 5, left: -22, bottom: 0 }}
-                    >
-                      <CartesianGrid
-                        stroke={colors.grid}
-                        strokeDasharray="3 3"
-                        vertical={false}
-                      />
-                      <XAxis
-                        dataKey="month"
-                        axisLine={false}
-                        tickLine={false}
-                        tick={{ fill: colors.tick, fontSize: 12 }}
-                      />
-                      <YAxis
-                        axisLine={false}
-                        tickLine={false}
-                        tick={{ fill: colors.tick, fontSize: 12 }}
-                      />
-                      <Tooltip
-                        cursor={{ fill: colors.bar, fillOpacity: 0.08 }}
-                        contentStyle={tooltipStyle}
-                        itemStyle={{ color: colors.tooltipText }}
-                        labelStyle={{ color: colors.tooltipText }}
-                      />
-                      <Bar
-                        dataKey="count"
-                        name="Demo activity"
-                        fill={colors.bar}
-                        radius={[5, 5, 0, 0]}
-                        maxBarSize={34}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
+                {modelInfoError ? (
+                  <div className="empty-state">
+                    <strong>Model details unavailable</strong>
+                    <p>{modelInfoError}</p>
+                  </div>
+                ) : !modelInfo ? (
+                  <p className="chart-footnote">Loading model details...</p>
+                ) : (
+                  <>
+                    {metricChips.length > 0 && (
+                      <div className="metric-row">
+                        {metricChips.map((chip) => (
+                          <span key={chip.label} className="metric-chip">
+                            <span>{chip.label}</span>
+                            <strong>{chip.value}</strong>
+                          </span>
+                        ))}
+                      </div>
+                    )}
 
-                <p className="chart-footnote">
-                  These values are placeholders, not real publication-date
-                  statistics.
-                </p>
+                    {importanceData.length > 0 ? (
+                      <div className="trend-chart">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart
+                            data={importanceData}
+                            layout="vertical"
+                            margin={{ top: 5, right: 16, left: 4, bottom: 0 }}
+                          >
+                            <CartesianGrid
+                              stroke={colors.grid}
+                              strokeDasharray="3 3"
+                              horizontal={false}
+                            />
+
+                            <XAxis
+                              type="number"
+                              axisLine={false}
+                              tickLine={false}
+                              tick={{ fill: colors.tick, fontSize: 11 }}
+                            />
+
+                            <YAxis
+                              type="category"
+                              dataKey="feature"
+                              width={140}
+                              axisLine={false}
+                              tickLine={false}
+                              tick={{ fill: colors.tickStrong, fontSize: 10 }}
+                            />
+
+                            <Tooltip
+                              cursor={{ fill: colors.bar, fillOpacity: 0.08 }}
+                              contentStyle={tooltipStyle}
+                              itemStyle={{ color: colors.tooltipText }}
+                              labelStyle={{ color: colors.tooltipText }}
+                              formatter={(value) => [
+                                Number(value).toFixed(4),
+                                "Mean |SHAP|",
+                              ]}
+                            />
+
+                            <Bar
+                              dataKey="importance"
+                              fill={colors.bar}
+                              radius={[0, 4, 4, 0]}
+                              maxBarSize={18}
+                            />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    ) : (
+                      <p className="chart-footnote">
+                        The backend did not return feature importance.
+                      </p>
+                    )}
+
+                    <p className="chart-footnote">
+                      Metrics are from the held-out test set
+                      {modelInfo.positive_rate != null
+                        ? `, where only ${formatPercent(
+                            modelInfo.positive_rate
+                          )} of CVEs are in KEV. With classes this uneven, PR-AUC and recall say more than accuracy.`
+                        : "."}
+                    </p>
+                  </>
+                )}
               </article>
             </section>
 
             <section className="panel table-panel">
               <div className="panel-heading table-panel-heading">
                 <div>
-                  <h3>Top priorities</h3>
-                  <p>Highest heuristic priority scores in the loaded records</p>
+                  <h3>Top model-ranked CVEs</h3>
+                  <p>{modelStatement}</p>
                 </div>
+
                 <button
                   className="text-button"
                   onClick={() => navigateTo("Vulnerabilities")}
@@ -758,195 +971,437 @@ function App() {
         {/* ---------- Vulnerability explorer ---------- */}
 
         {activeTab === "Vulnerabilities" && (
-          <section className="panel explorer-panel">
-            <div className="panel-heading explorer-heading">
-              <div>
-                <h3>Priority ranking</h3>
-                <p>
-                  {loading
-                    ? "Loading vulnerability records..."
-                    : `Showing ${formatNumber(
-                        vulnerabilities.length
-                      )} of ${formatNumber(totalMatches)} matching records`}
-                </p>
-              </div>
-              <span className="demo-chip">LIVE DATASET</span>
-            </div>
+          <>
+            {/* 1. Live CVE Prediction at the top */}
 
-            <div className="filter-row">
-              <div className="search-box">
-                <Search size={17} />
-                <input
-                  type="search"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  placeholder="Search CVE ID, description, or severity..."
-                  aria-label="Search vulnerability records"
-                />
-                {search && (
+            <section className="panel explorer-panel">
+              <div className="panel-heading">
+                <div>
+                  <h3>Live CVE Prediction</h3>
+                  <p>
+                    Enter a CVE ID to retrieve its vulnerability details and
+                    estimate its likelihood of CISA KEV inclusion.
+                  </p>
+                </div>
+
+                <span className="panel-icon">
+                  <Sparkles size={18} />
+                </span>
+              </div>
+
+              <form
+                onSubmit={runLivePrediction}
+                className="live-prediction-form"
+              >
+                <label
+                  htmlFor="live-cve-id"
+                  className="live-prediction-label"
+                >
+                  CVE ID
+                </label>
+
+                <div className="live-prediction-controls">
+                  <input
+                    id="live-cve-id"
+                    className="live-cve-input"
+                    type="text"
+                    value={liveCveId}
+                    onChange={(event) => setLiveCveId(event.target.value)}
+                    placeholder="e.g. CVE-2021-44228"
+                    autoComplete="off"
+                    spellCheck={false}
+                    aria-describedby="live-cve-help"
+                  />
+
                   <button
-                    className="clear-search"
-                    onClick={() => setSearch("")}
-                    aria-label="Clear search"
+                    className="primary-button live-predict-button"
+                    type="submit"
+                    disabled={livePredictionLoading}
                   >
-                    <X size={15} />
+                    <BrainCircuit size={16} />
+                    {livePredictionLoading
+                      ? "Fetching and predicting..."
+                      : "Predict CVE"}
                   </button>
-                )}
+                </div>
+
+                <p id="live-cve-help" className="live-cve-help">
+                  Example: CVE-2021-44228 (Log4Shell). The backend retrieves
+                  available data from NVD and FIRST EPSS before running the
+                  trained model.
+                </p>
+              </form>
+
+              {livePredictionError && (
+                <div className="empty-state" role="alert">
+                  <strong>Prediction failed</strong>
+                  <p>{livePredictionError}</p>
+                </div>
+              )}
+
+              {livePrediction && (
+                <div className="live-prediction-result">
+                  <div className="panel-heading">
+                    <div>
+                      <h3>{livePrediction.cve_id || liveCveId}</h3>
+                      <p>
+                        {livePrediction.source || "Live CVE lookup"}
+                      </p>
+                    </div>
+
+                    <span className="panel-icon">
+                      <ShieldCheck size={18} />
+                    </span>
+                  </div>
+
+                  <p className="live-prediction-description">
+                    {livePrediction.description || "No description available."}
+                  </p>
+
+                  <div className="stats-grid live-prediction-metrics">
+                    <StatCard
+                      icon={Target}
+                      label="Model KEV probability"
+                      value={formatProbability(
+                        toNumberOrNull(livePrediction.kev_probability)
+                      )}
+                      tone="violet"
+                      note="Model estimate"
+                    />
+
+                    <StatCard
+                      icon={ShieldAlert}
+                      label="Predicted KEV inclusion"
+                      value={
+                        livePrediction.predicted_kev == null
+                          ? "N/A"
+                          : livePrediction.predicted_kev
+                            ? "Likely"
+                            : "Unlikely"
+                      }
+                      tone="red"
+                      note="Prediction"
+                    />
+
+                    <StatCard
+                      icon={Gauge}
+                      label="CVSS score"
+                      value={
+                        livePrediction.cvss_score == null
+                          ? "N/A"
+                          : Number(livePrediction.cvss_score).toFixed(1)
+                      }
+                      tone="amber"
+                      note={livePrediction.cvss_severity || "Severity"}
+                    />
+
+                    <StatCard
+                      icon={ShieldCheck}
+                      label="EPSS score"
+                      value={
+                        livePrediction.epss_score == null
+                          ? "N/A"
+                          : formatPercent(livePrediction.epss_score)
+                      }
+                      tone="green"
+                      note="Exploit prediction"
+                    />
+                  </div>
+
+                  {livePrediction.published_date && (
+                    <div className="modal-info-row live-prediction-metadata">
+                      <span>Published date</span>
+                      <strong>{livePrediction.published_date}</strong>
+                    </div>
+                  )}
+
+                  {livePrediction.epss_percentile != null && (
+                    <div className="modal-info-row live-prediction-metadata">
+                      <span>EPSS percentile</span>
+                      <strong>
+                        {formatPercent(livePrediction.epss_percentile)}
+                      </strong>
+                    </div>
+                  )}
+
+                  <p
+                    className="chart-footnote"
+                    style={{ marginTop: "16px" }}
+                  >
+                    Source: {livePrediction.source || "NVD + FIRST EPSS"}.{" "}
+                    {livePrediction.interpretation ||
+                      "The probability is a model estimate, not a guarantee of exploitation."}
+                  </p>
+
+                  <button
+                    className="primary-button modal-action"
+                    type="button"
+                    onClick={() => {
+                      setSelectedCve({
+                        id: livePrediction.cve_id || liveCveId,
+                        title:
+                          livePrediction.description ||
+                          "Live CVE prediction",
+                        description:
+                          livePrediction.description ||
+                          "No description available.",
+                        score:
+                          livePrediction.cvss_score ??
+                          livePrediction.base_score ??
+                          null,
+                        severity:
+                          livePrediction.cvss_severity ||
+                          livePrediction.base_severity ||
+                          "UNKNOWN",
+                        epss: livePrediction.epss_score ?? null,
+                        date: livePrediction.published_date || "Unknown",
+                        modelScore: livePrediction.kev_probability ?? null,
+                      });
+
+                      setShowDetails(false);
+                      setShapExplanation(null);
+                      setShapError("");
+                      setActiveTab("Explainability");
+                    }}
+                  >
+                    <BrainCircuit size={16} />
+                    Explain this prediction
+                  </button>
+                </div>
+              )}
+            </section>
+
+            {/* 2. Model-ranked vulnerability list below */}
+
+            <section className="panel table-panel">
+              <div className="panel-heading table-panel-heading">
+                <div>
+                  <h3>Model-ranked CVE list</h3>
+                  <p>
+                    CVEs ordered by the trained model's probability of CISA
+                    KEV inclusion.
+                  </p>
+                </div>
               </div>
 
-              <div className="filter-select-wrap">
-                <Filter size={16} />
-                <select
-                  value={severityFilter}
-                  onChange={(event) => setSeverityFilter(event.target.value)}
-                  aria-label="Filter by severity"
-                >
-                  <option value="ALL">All severities</option>
-                  <option value="CRITICAL">Critical</option>
-                  <option value="HIGH">High</option>
-                  <option value="MEDIUM">Medium</option>
-                  <option value="LOW">Low</option>
-                  <option value="NONE">None</option>
-                </select>
-              </div>
-            </div>
+              {apiError ? (
+                <div className="empty-state">
+                  <strong>Unable to load vulnerability records</strong>
+                  <p>{apiError}</p>
+                </div>
+              ) : loading ? (
+                <p className="chart-footnote">Loading CVE records...</p>
+              ) : vulnerabilities.length === 0 ? (
+                <div className="empty-state">
+                  <strong>No vulnerability records found</strong>
+                  <p>
+                    The backend returned no CVEs matching the current filters.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <VulnerabilityTable
+                    rows={vulnerabilities}
+                    onSelect={openCve}
+                  />
 
-            {apiError && (
-              <div className="empty-state">
-                <strong>Unable to load live data</strong>
-                <p>{apiError}</p>
-              </div>
-            )}
-
-            {loading && (
-              <p className="chart-footnote">Loading CVE records...</p>
-            )}
-
-            {!loading && !apiError && vulnerabilities.length > 0 && (
-              <VulnerabilityTable
-                rows={filteredVulnerabilities}
-                onSelect={openCve}
-              />
-            )}
-
-            {!loading && !apiError && vulnerabilities.length === 0 && (
-              <div className="empty-state">
-                <Search size={28} />
-                <strong>No matching CVEs</strong>
-                <p>Try a different search term or severity filter.</p>
-                <button
-                  className="secondary-button"
-                  onClick={() => {
-                    setSearch("");
-                    setSeverityFilter("ALL");
-                  }}
-                >
-                  Clear filters
-                </button>
-              </div>
-            )}
-
-            <p className="chart-footnote explorer-note">
-              Priority scores use a temporary heuristic based on CVSS, EPSS,
-              and CISA KEV membership. The trained model prediction is shown
-              separately when you open a CVE. Only the first 100 matching
-              records are currently displayed.
-            </p>
-          </section>
+                  <p className="chart-footnote">
+                    Showing {vulnerabilities.length} of{" "}
+                    {formatNumber(totalMatches)} matching records. Select a
+                    row to view its model prediction and details.
+                  </p>
+                </>
+              )}
+            </section>
+          </>
         )}
 
-        {/* ---------- Explainability ---------- */}
+        {/* ---------- SHAP explainability ---------- */}
 
         {activeTab === "Explainability" && (
           <section className="explain-grid">
             <article className="panel explain-main">
               <div className="panel-heading">
                 <div>
-                  <h3>Feature contribution</h3>
-                  <p>Illustrative SHAP-style explanation</p>
+                  <h3>SHAP feature contributions</h3>
+                  <p>
+                    {selectedCve
+                      ? `Explanation for ${selectedCve.id}`
+                      : "Select a CVE to begin"}
+                  </p>
                 </div>
+
                 <span className="panel-icon">
                   <BrainCircuit size={18} />
                 </span>
               </div>
 
-              <div className="explain-callout">
-                <Sparkles size={19} />
-                <div>
-                  <strong>Understanding model explanations</strong>
+              {!selectedCve ? (
+                <div className="empty-state">
+                  <BrainCircuit size={30} />
+                  <strong>No CVE selected</strong>
                   <p>
-                    Feature contributions can help explain why a model makes
-                    a prediction. The chart below is an illustrative example,
-                    not a calculation from the trained model.
+                    Open the Vulnerabilities page, select a CVE, and click
+                    "View SHAP explanation" to see its feature contributions.
+                  </p>
+
+                  <button
+                    className="primary-button"
+                    onClick={() => navigateTo("Vulnerabilities")}
+                  >
+                    <FileSearch size={16} />
+                    Choose a CVE
+                  </button>
+                </div>
+              ) : shapLoading ? (
+                <div className="empty-state">
+                  <BrainCircuit size={28} />
+                  <strong>Calculating explanation...</strong>
+                  <p>
+                    Fetching SHAP contributions for {selectedCve.id} from the
+                    backend.
                   </p>
                 </div>
-              </div>
+              ) : shapError ? (
+                <div className="empty-state">
+                  <AlertTriangle size={28} />
+                  <strong>Could not load SHAP explanation</strong>
+                  <p role="alert">{shapError}</p>
 
-              <div className="feature-chart">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart
-                    data={demoExplanations}
-                    layout="vertical"
-                    margin={{ top: 5, right: 20, left: 8, bottom: 5 }}
+                  <button
+                    className="secondary-button"
+                    onClick={() => setShapRetry((value) => value + 1)}
                   >
-                    <CartesianGrid
-                      stroke={colors.grid}
-                      strokeDasharray="3 3"
-                      horizontal={false}
-                    />
-                    <XAxis
-                      type="number"
-                      domain={[-0.4, 1]}
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fill: colors.tick, fontSize: 11 }}
-                    />
-                    <YAxis
-                      type="category"
-                      dataKey="feature"
-                      width={175}
-                      axisLine={false}
-                      tickLine={false}
-                      tick={{ fill: colors.tickStrong, fontSize: 11 }}
-                    />
-                    <Tooltip
-                      contentStyle={tooltipStyle}
-                      itemStyle={{ color: colors.tooltipText }}
-                      labelStyle={{ color: colors.tooltipText }}
-                      formatter={(value) => [
-                        Number(value).toFixed(2),
-                        "Example contribution",
-                      ]}
-                    />
-                    <Bar dataKey="impact" name="Contribution" radius={4}>
-                      {demoExplanations.map((entry) => (
-                        <Cell
-                          key={entry.feature}
-                          fill={
-                            entry.impact >= 0
-                              ? colors.positive
-                              : colors.negative
-                          }
+                    Try again
+                  </button>
+                </div>
+              ) : shapExplanation ? (
+                <>
+                  <div className="explain-callout">
+                    <Sparkles size={19} />
+
+                    <div>
+                      <strong>Why the model scored this CVE as it did</strong>
+                      <p>
+                        Each bar is how much a feature moved this CVE's score
+                        away from the model's baseline. Positive values raise
+                        the predicted KEV likelihood; negative values lower
+                        it.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="feature-chart">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={shapExplanation.contributions}
+                        layout="vertical"
+                        margin={{ top: 5, right: 25, left: 8, bottom: 5 }}
+                      >
+                        <CartesianGrid
+                          stroke={colors.grid}
+                          strokeDasharray="3 3"
+                          horizontal={false}
                         />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
 
-              <div className="explanation-legend">
-                <span>
-                  <i className="positive-dot" /> Pushes risk higher
-                </span>
-                <span>
-                  <i className="negative-dot" /> Pushes risk lower
-                </span>
-              </div>
+                        <XAxis
+                          type="number"
+                          domain={["auto", "auto"]}
+                          axisLine={false}
+                          tickLine={false}
+                          tick={{ fill: colors.tick, fontSize: 11 }}
+                        />
 
-              <p className="chart-footnote">
-                Illustrative values only. Actual SHAP values have not yet been
-                connected to the trained model.
-              </p>
+                        <YAxis
+                          type="category"
+                          dataKey="feature"
+                          width={175}
+                          axisLine={false}
+                          tickLine={false}
+                          tick={{ fill: colors.tickStrong, fontSize: 10 }}
+                        />
+
+                        <Tooltip
+                          contentStyle={tooltipStyle}
+                          itemStyle={{ color: colors.tooltipText }}
+                          labelStyle={{ color: colors.tooltipText }}
+                          formatter={(value) => [
+                            Number(value).toFixed(6),
+                            "SHAP value",
+                          ]}
+                        />
+
+                        <Bar
+                          dataKey="impact"
+                          name="SHAP contribution"
+                          radius={[0, 4, 4, 0]}
+                        >
+                          {shapExplanation.contributions.map((item) => (
+                            <Cell
+                              key={item.feature}
+                              fill={
+                                item.impact >= 0
+                                  ? colors.positive
+                                  : colors.negative
+                              }
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="explanation-legend">
+                    <span>
+                      <i className="positive-dot" />
+                      Raises predicted likelihood
+                    </span>
+
+                    <span>
+                      <i className="negative-dot" />
+                      Lowers predicted likelihood
+                    </span>
+                  </div>
+
+                  <div className="modal-info-row">
+                    <span>Selected CVE</span>
+                    <strong>
+                      {shapExplanation.cve_id || selectedCve.id}
+                    </strong>
+                  </div>
+
+                  {shapExplanation.base_value != null && (
+                    <div className="modal-info-row">
+                      <span>Model base value</span>
+                      <strong>
+                        {Number(shapExplanation.base_value).toFixed(6)}
+                      </strong>
+                    </div>
+                  )}
+
+                  <p className="chart-footnote">
+                    Method:{" "}
+                    {shapExplanation.explanation_type ||
+                      "SHAP feature contributions"}
+                    . SHAP shows what drove the model's output. It does not
+                    show that a vulnerability is safe or exploitable.
+                  </p>
+                </>
+              ) : (
+                <div className="empty-state">
+                  <strong>No explanation available</strong>
+                  <p>
+                    The backend did not return an explanation for this CVE.
+                  </p>
+
+                  <button
+                    className="secondary-button"
+                    onClick={() => setShapRetry((value) => value + 1)}
+                  >
+                    Try again
+                  </button>
+                </div>
+              )}
             </article>
 
             <article className="panel explain-side">
@@ -960,10 +1415,10 @@ function App() {
               <div className="guide-item">
                 <span className="guide-number">01</span>
                 <div>
-                  <strong>Feature importance</strong>
+                  <strong>Feature contribution</strong>
                   <p>
-                    Shows which input features have the largest effect on a
-                    particular model prediction.
+                    Each bar shows the SHAP value calculated for one feature
+                    in the selected CVE's explanation.
                   </p>
                 </div>
               </div>
@@ -973,8 +1428,8 @@ function App() {
                 <div>
                   <strong>Positive contribution</strong>
                   <p>
-                    A feature may push the model output toward the explained
-                    class. Its meaning depends on the model and target.
+                    A positive value pushes the model output higher than its
+                    baseline.
                   </p>
                 </div>
               </div>
@@ -984,8 +1439,8 @@ function App() {
                 <div>
                   <strong>Negative contribution</strong>
                   <p>
-                    A feature may push the output away from the explained
-                    class. It does not prove a vulnerability is safe.
+                    A negative value pushes the model output lower than its
+                    baseline.
                   </p>
                 </div>
               </div>
@@ -995,11 +1450,22 @@ function App() {
                 <div>
                   <strong>Method: SHAP</strong>
                   <p>
-                    This section is illustrative; it does not yet show SHAP
-                    values calculated from the trained model.
+                    SHAP assigns each input feature a share of the model's
+                    output. Interpret values in the context of the model and
+                    target class.
                   </p>
                 </div>
               </div>
+
+              {selectedCve && (
+                <button
+                  className="secondary-button"
+                  onClick={() => setShapRetry((value) => value + 1)}
+                  disabled={shapLoading}
+                >
+                  Refresh explanation
+                </button>
+              )}
             </article>
           </section>
         )}
@@ -1010,6 +1476,7 @@ function App() {
             <span className="footer-divider">/</span>
             CVE Explainable AI
           </span>
+
           <span>Research prototype · Local API</span>
         </footer>
       </main>
@@ -1033,6 +1500,7 @@ function App() {
               <div className="modal-icon">
                 <ShieldAlert size={22} />
               </div>
+
               <button
                 className="icon-button"
                 onClick={() => setShowDetails(false)}
@@ -1043,7 +1511,7 @@ function App() {
             </div>
 
             <span className="modal-eyebrow">
-              LIVE CVE RECORD · RANK #{selectedCve.rank}
+              CVE RECORD · MODEL RANK #{selectedCve.rank}
             </span>
 
             <h2 id="detail-title">{selectedCve.id}</h2>
@@ -1061,13 +1529,12 @@ function App() {
               </div>
 
               <div className="modal-metric">
-                <span>Heuristic priority</span>
-                <strong>{selectedCve.priority}</strong>
-                <span
-                  className={`tier-badge ${selectedCve.tier.toLowerCase()}`}
-                >
-                  {selectedCve.tier}
-                </span>
+                <span>Model KEV probability</span>
+                <strong>
+                  {formatProbability(
+                    modelPrediction?.kev_probability ?? selectedCve.modelScore
+                  )}
+                </strong>
               </div>
 
               <div className="modal-metric">
@@ -1080,8 +1547,6 @@ function App() {
               </div>
             </div>
 
-            {/* Trained model prediction */}
-
             <div className="modal-section">
               <h4>
                 <BrainCircuit
@@ -1092,7 +1557,7 @@ function App() {
                     marginRight: "8px",
                   }}
                 />
-                AI Model Prediction
+                AI model prediction
               </h4>
 
               {predictionLoading ? (
@@ -1111,13 +1576,15 @@ function App() {
                   <div className="modal-info-row">
                     <span>Model-estimated probability</span>
                     <strong>
-                      {formatPercent(modelPrediction.kev_probability)}
+                      {formatProbability(modelPrediction.kev_probability)}
                     </strong>
                   </div>
 
-                  <p className="chart-footnote">
-                    {modelPrediction.interpretation}
-                  </p>
+                  {modelPrediction.interpretation && (
+                    <p className="chart-footnote">
+                      {modelPrediction.interpretation}
+                    </p>
+                  )}
                 </>
               ) : (
                 <p>Prediction not available.</p>
@@ -1131,49 +1598,47 @@ function App() {
 
             <div className="modal-section">
               <h4>Record information</h4>
+
               <div className="modal-info-row">
                 <span>Attack vector</span>
-                <strong>{selectedCve.vector}</strong>
+                <strong>{selectedCve.vector || "N/A"}</strong>
               </div>
+
               <div className="modal-info-row">
                 <span>Published date</span>
                 <strong>{selectedCve.date}</strong>
               </div>
+
               <div className="modal-info-row">
                 <span>CISA KEV status in dataset</span>
-                <strong>{selectedCve.status}</strong>
+                <strong>{selectedCve.status || "Live prediction"}</strong>
               </div>
             </div>
 
             <div className="modal-disclaimer">
               <AlertTriangle size={16} />
               The model estimates CISA KEV inclusion; it is not a CVSS score
-              or a guarantee of exploitation. The priority score is a separate
-              heuristic. Verify findings against authoritative vulnerability
-              sources.
+              or a guarantee of exploitation. Verify findings against
+              authoritative vulnerability sources.
             </div>
 
             <button
               className="primary-button modal-action"
               onClick={() => {
                 setShowDetails(false);
+                setShapExplanation(null);
+                setShapError("");
                 setActiveTab("Explainability");
               }}
             >
               <BrainCircuit size={16} />
-              View example explanation
+              View SHAP explanation
             </button>
           </section>
         </div>
       )}
     </div>
   );
-}
-
-/* ---------- Prediction error helper ---------- */
-
-function responseErrorMessage() {
-  return "Could not generate a model prediction. Check that the backend is running and this CVE exists in its dataset.";
 }
 
 /* ---------- Vulnerability table ---------- */
@@ -1190,7 +1655,7 @@ function VulnerabilityTable({ rows, onSelect }) {
             <th>CVSS</th>
             <th>EPSS</th>
             <th>CISA KEV STATUS</th>
-            <th>PRIORITY</th>
+            <th>MODEL KEV RISK</th>
             <th aria-label="Actions" />
           </tr>
         </thead>
@@ -1243,7 +1708,7 @@ function VulnerabilityTable({ rows, onSelect }) {
               </td>
 
               <td>
-                <PriorityCell priority={cve.priority} tier={cve.tier} />
+                <ModelRiskCell value={cve.modelScore} />
               </td>
 
               <td>

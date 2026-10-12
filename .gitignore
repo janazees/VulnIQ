@@ -9,3 +9,13 @@ frontend/node_modules/
 frontend/dist/
 .ipynb_checkpoints/
 combined_cve_vulnerabilities.csv
+
+
+# Large local datasets
+/cve_corpus.csv
+/cve_model_data_with_descriptions.csv
+/combined_cve_vulnerabilities.csv
+
+# macOS system files
+.DS_Store
+**/.DS_Store
